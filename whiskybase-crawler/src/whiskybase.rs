@@ -1,15 +1,23 @@
 use anyhow::Result;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use voyager::{scraper::Selector, Crawler, Response, Scraper};
 
-use crate::util::{select_one_text, select_one_text_by_column, select_one_text_from_html};
+use crate::{
+    data::WeakDate,
+    util::{select_one_text, select_one_text_by_column, select_one_text_from_html},
+};
 
-#[derive(Debug)]
-pub struct Whisky {
-    name: String,
-    distillery: Option<String>,
-    whiskybase_id: String,
-    whiskybase_score: String,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WhiskyBaseWhisky {
+    pub name: String,
+    pub distillery: Option<String>,
+    pub bottler: Option<String>,
+    pub abv: Option<f32>,
+    pub vintage: Option<WeakDate>,
+    pub bottled: Option<WeakDate>,
+    pub whiskybase_id: String,
+    pub whiskybase_score: String,
 }
 
 #[derive(Debug)]
@@ -43,8 +51,60 @@ impl Default for WhiskybaseScraper {
     }
 }
 
+// Whiskybase uses data format 'DD.MM.YYYY' or 'MM.YYYY' or 'YYYY'
+fn parse_date(value: String) -> Option<WeakDate> {
+    let values = value.split('.').into_iter().collect::<Vec<_>>();
+
+    match values[..] {
+        [day, month, year] => {
+            if let Some(year) = year.parse().ok() {
+                Some(WeakDate {
+                    year,
+                    month: month.parse().ok(),
+                    day: day.parse().ok(),
+                })
+            } else {
+                None
+            }
+        }
+        [month, year] => {
+            if let Some(year) = year.parse().ok() {
+                Some(WeakDate {
+                    year,
+                    month: month.parse().ok(),
+                    day: None,
+                })
+            } else {
+                None
+            }
+        }
+        [year] => {
+            if let Some(year) = year.parse().ok() {
+                Some(WeakDate {
+                    year,
+                    month: None,
+                    day: None,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_abv(value: String) -> Option<f32> {
+    let re = Regex::new(r"[0-9]*\.[0-9]*").unwrap();
+
+    if let Some(mat) = re.find(&value) {
+        mat.as_str().parse().ok()
+    } else {
+        None
+    }
+}
+
 impl Scraper for WhiskybaseScraper {
-    type Output = Whisky;
+    type Output = WhiskyBaseWhisky;
     type State = WhiskybaseState;
 
     fn scrape(
@@ -102,9 +162,19 @@ impl Scraper for WhiskybaseScraper {
                         .text()
                         .collect::<Vec<_>>();
 
-                    return Ok(Some(Whisky {
+                    return Ok(Some(WhiskyBaseWhisky {
                         name: whitespace.replace_all(&raw_title, " ").trim().to_string(),
                         distillery: select_one_text_by_column(&detail, "Distillery"),
+                        bottler: select_one_text_by_column(&detail, "Bottler"),
+                        abv: select_one_text_by_column(&detail, "Strength")
+                            .map(|abv| parse_abv(abv))
+                            .flatten(),
+                        vintage: select_one_text_by_column(&detail, "Vintage")
+                            .map(|date| parse_date(date))
+                            .flatten(),
+                        bottled: select_one_text_by_column(&detail, "Bottled")
+                            .map(|date| parse_date(date))
+                            .flatten(),
                         whiskybase_id: select_one_text_by_column(&detail, "Whiskybase ID").unwrap(),
                         whiskybase_score: select_one_text_from_html(&html, &self.whiskybase_score)
                             .unwrap(),
@@ -114,5 +184,48 @@ impl Scraper for WhiskybaseScraper {
         }
 
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        data::WeakDate,
+        whiskybase::{parse_abv, parse_date},
+    };
+
+    #[test]
+    fn test_parse_date() {
+        assert_eq!(
+            parse_date("06.04.1987".to_string()),
+            Some(WeakDate {
+                year: 1987,
+                month: Some(4),
+                day: Some(6)
+            })
+        );
+
+        assert_eq!(
+            parse_date("09.2011".to_string()),
+            Some(WeakDate {
+                year: 2011,
+                month: Some(9),
+                day: None
+            })
+        );
+
+        assert_eq!(
+            parse_date("1946".to_string()),
+            Some(WeakDate {
+                year: 1946,
+                month: None,
+                day: None
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_abv() {
+        assert_eq!(parse_abv("52.0 % Vol.".to_string()), Some(52.0))
     }
 }

@@ -5,6 +5,7 @@ use voyager::{Collector, CrawlerConfig, RequestDelay};
 
 use whiskybase::{WhiskybaseScraper, WhiskybaseState};
 
+mod data;
 mod util;
 mod whiskybase;
 
@@ -23,7 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Some(output) = collector.next().await {
         if let Ok(whisky) = output {
-            println!("{:?}", whisky);
+            if whisky.vintage.is_some() {
+                println!("{:?}", whisky);
+            }
         }
     }
 

@@ -9,5 +9,6 @@ edition = "2021"
 anyhow = "1.0.69"
 futures = "0.3.26"
 regex = "1.7.1"
+serde = { version = "1.0.171", features = ["derive"] }
 tokio = { version = "1.26.0", features = ["full"] }
 voyager = "0.2.1"
