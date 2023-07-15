@@ -1,11 +1,17 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use voyager::{scraper::Selector, Crawler, Response, Scraper};
+use voyager::{
+    scraper::Selector, Collector, Crawler, CrawlerConfig, RequestDelay, Response, Scraper,
+};
 
 use crate::{
-    data::WeakDate,
-    util::{select_one_text, select_one_text_by_column, select_one_text_from_html},
+    data::{DefaultScraper, WeakDate},
+    util::{
+        select_one_text, select_one_text_by_column, select_one_text_from_html, split_nums_and_strs,
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,15 +29,12 @@ pub struct WhiskyBaseWhisky {
 #[derive(Debug)]
 pub enum WhiskybaseState {
     RootSitemap,
-    WhiskySitemap,
+    SubSitemap,
     WhiskyPage,
 }
 
 pub struct WhiskybaseScraper {
-    sitemap: Selector,
-    loc: Selector,
-    lastmod: Selector,
-    url: Selector,
+    scraper: DefaultScraper,
     whisky_title: Selector,
     whisky_detail: Selector,
     whiskybase_score: Selector,
@@ -40,10 +43,7 @@ pub struct WhiskybaseScraper {
 impl Default for WhiskybaseScraper {
     fn default() -> Self {
         Self {
-            sitemap: Selector::parse("sitemap").unwrap(),
-            loc: Selector::parse("loc").unwrap(),
-            lastmod: Selector::parse("lastmod").unwrap(),
-            url: Selector::parse("url").unwrap(),
+            scraper: DefaultScraper::default(),
             whisky_title: Selector::parse("h1").unwrap(),
             whisky_detail: Selector::parse("div#whisky-details dl").unwrap(),
             whiskybase_score: Selector::parse("span.votes-rating-current").unwrap(),
@@ -94,13 +94,9 @@ fn parse_date(value: String) -> Option<WeakDate> {
 }
 
 fn parse_abv(value: String) -> Option<f32> {
-    let re = Regex::new(r"[0-9]*\.[0-9]*").unwrap();
+    let (nums, _) = split_nums_and_strs(value);
 
-    if let Some(mat) = re.find(&value) {
-        mat.as_str().parse().ok()
-    } else {
-        None
-    }
+    nums.first().and_then(|n| n.parse().ok())
 }
 
 impl Scraper for WhiskybaseScraper {
@@ -117,8 +113,8 @@ impl Scraper for WhiskybaseScraper {
         if let Some(state) = response.state {
             match state {
                 WhiskybaseState::RootSitemap => {
-                    let sites = html.select(&self.sitemap).filter_map(|el| {
-                        let site = select_one_text(&el, &self.loc).unwrap();
+                    let sites = html.select(&self.scraper.sitemap).filter_map(|el| {
+                        let site = select_one_text(&el, &self.scraper.loc).unwrap();
 
                         // the root sitemap has not only whiskies info sitemap, but also other info sitemap.
                         if site.contains("whiskies") {
@@ -131,13 +127,13 @@ impl Scraper for WhiskybaseScraper {
                     // TODO: If using DB on someday, check lastmod for update
 
                     for site in sites {
-                        crawler.visit_with_state(&site, WhiskybaseState::WhiskySitemap);
+                        crawler.visit_with_state(&site, WhiskybaseState::SubSitemap);
                     }
                 }
-                WhiskybaseState::WhiskySitemap => {
+                WhiskybaseState::SubSitemap => {
                     let sites = html
-                        .select(&self.url)
-                        .map(|el| select_one_text(&el, &self.loc).unwrap());
+                        .select(&self.scraper.url)
+                        .map(|el| select_one_text(&el, &self.scraper.loc).unwrap());
 
                     // TODO: If using DB on someday, check lastmod for update
 
@@ -148,7 +144,7 @@ impl Scraper for WhiskybaseScraper {
                 WhiskybaseState::WhiskyPage => {
                     let whitespace = Regex::new(r"[\t\r\n\s]+").unwrap();
 
-                    let raw_title = html
+                    let raw_name = html
                         .select(&self.whisky_title)
                         .next()
                         .unwrap()
@@ -163,18 +159,15 @@ impl Scraper for WhiskybaseScraper {
                         .collect::<Vec<_>>();
 
                     return Ok(Some(WhiskyBaseWhisky {
-                        name: whitespace.replace_all(&raw_title, " ").trim().to_string(),
+                        name: whitespace.replace_all(&raw_name, " ").trim().to_string(),
                         distillery: select_one_text_by_column(&detail, "Distillery"),
                         bottler: select_one_text_by_column(&detail, "Bottler"),
                         abv: select_one_text_by_column(&detail, "Strength")
-                            .map(|abv| parse_abv(abv))
-                            .flatten(),
+                            .and_then(|abv| parse_abv(abv)),
                         vintage: select_one_text_by_column(&detail, "Vintage")
-                            .map(|date| parse_date(date))
-                            .flatten(),
+                            .and_then(|date| parse_date(date)),
                         bottled: select_one_text_by_column(&detail, "Bottled")
-                            .map(|date| parse_date(date))
-                            .flatten(),
+                            .and_then(|date| parse_date(date)),
                         whiskybase_id: select_one_text_by_column(&detail, "Whiskybase ID").unwrap(),
                         whiskybase_score: select_one_text_from_html(&html, &self.whiskybase_score)
                             .unwrap(),
@@ -185,6 +178,19 @@ impl Scraper for WhiskybaseScraper {
 
         Ok(None)
     }
+}
+
+pub fn scrape_whiskybase(random_delay: Duration) -> Collector<WhiskybaseScraper> {
+    let config = CrawlerConfig::default()
+        .allow_domain_with_delay("www.whiskybase.com", RequestDelay::random(random_delay));
+    let mut collector = Collector::new(WhiskybaseScraper::default(), config);
+
+    collector.crawler_mut().visit_with_state(
+        "https://www.whiskybase.com/sitemaps/sitemaps.xml",
+        WhiskybaseState::RootSitemap,
+    );
+
+    collector
 }
 
 #[cfg(test)]
