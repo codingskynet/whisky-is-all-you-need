@@ -130,7 +130,7 @@ impl Scraper for WhiskyAuctioneerScraper {
                             .filter(|s| s.contains("%"))
                             .and_then(|s| split_nums_and_strs(s).0.clone().first().cloned())
                             .and_then(|s| s.parse().ok()),
-                        bottle_size: select_one_text_by_column(&detail, "Bottle Size::")
+                        bottle_size: select_one_text_by_column(&detail, "Bottle Size:")
                             .filter(|s| s != "N/A"),
                     }));
                 }
