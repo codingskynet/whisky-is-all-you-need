@@ -1,6 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use std::time::Duration;
+use whiskyauction::scrape_whiskyauction;
 use whiskyauctioneer::scrape_whiskyauctioneer;
 use whiskybase::scrape_whiskybase;
 
@@ -21,6 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut whiskybase_whiskies = scrape_whiskybase(Duration::from_millis(10));
 
     while let Some(result) = whiskybase_whiskies.next().await {
+        println!("{result:?}")
+    }
+
+    let mut whiskyauction_whiskies = scrape_whiskyauction(Duration::from_millis(50));
+
+    while let Some(result) = whiskyauction_whiskies.next().await {
         println!("{result:?}")
     }
 
